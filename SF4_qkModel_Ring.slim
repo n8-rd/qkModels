@@ -1,0 +1,147 @@
+//an individual based version of the Meyers et al. 2005 model
+//but where the GP map can evolve
+//it expects a few parameters to be set on the command line:
+//e.g., slim -d rep=1 -d la=100 -d rh=0.5 SF4_qkModel_Ring.slim
+//--------------------------------------------------------------------//
+
+initialize() {
+	initializeSLiMModelType("WF");
+	defineConstant("Rep", rep); //replication number
+	defineConstant("lambda", la); //rate of environmental cycling
+	defineConstant("u", 1e-2); //mutation rate [1e-3, 1e-2]
+	defineConstant("N", 500); //size of population
+	defineConstant("GP0", c(0,0,0,1,2));
+	defineConstant("G0", 0);
+	defineConstant("P0", 0);
+	defineConstant("rho", rh); //ratio of GP map muts to G muts
+}
+
+
+// set up population (no structure)
+// and give individuals their initial P and K states
+1 early() {
+	sim.addSubpop("p1", N);
+	sim.setValue("Regime", 0); //start in selective regime 0
+	inds = p1.individuals;
+	inds.setValue("GP", GP0);
+	inds.setValue("G", G0);
+	inds.setValue("P", P0);
+	inds.setValue("GPS", paste0(GP0));
+	inds.setValue("C", 0.0);
+	inds.setValue("S", 1.0);
+	inds.setValue("lP", 2);
+	inds.setValue("rP", 0);
+}
+
+modifyChild(){
+	//get some stuff
+	GPi = parent1.getValue("GP");
+	Gi = parent1.getValue("G");
+	Pi = parent1.getValue("P");
+	//was there a mutation?
+	moin = rbinom(1,1,u);
+	left = (Gi > 0) ? Gi - 1 else 4;
+	right = (Gi < 4) ? Gi + 1 else 0;
+	if (moin == 1){ //yes, there was a mutation
+		//does it affect G or the GP map?
+		coin = rbinom(1,1,1-rho);
+		if (coin==1){ //it affects G
+            doin = rbinom(1,1,0.5);
+            if (doin==1){
+                Gi = left;
+            } else {
+                Gi = right;
+            }
+            left = (Gi > 0) ? Gi - 1 else 4;
+		    	right = (Gi < 4) ? Gi + 1 else 0;
+		} else { //it affects the GP map
+			//chose an element of GP to change
+			target = sample(seq(0,4), 1);
+			//chose a new phenotype
+			newPheno = sample(seq(0,2), 1);
+			//do the swap
+			GPi[target] = newPheno;
+		}
+	}
+	child.setValue("GP", GPi);
+	child.setValue("G", Gi);
+	child.setValue("P", GPi[Gi]);
+	child.setValue("GPS", paste0(GPi));
+	child.setValue("lP", GPi[left]);
+	child.setValue("rP", GPi[right]);
+	cee = size(setIntersection(1, c(GPi[left], GPi[right])));
+	child.setValue("C", cee);
+	freshies = setDifference(c(GPi[left], GPi[right]), Pi);
+	ess = size(unique(freshies));
+	child.setValue("S", ess);
+	return T;
+}
+
+//do Regime changes
+1: early(){
+    if (sim.cycle % lambda == 0){
+        Regi = sim.getValue("Regime");
+        newRegi = abs(Regi-1);
+        sim.setValue("Regime", newRegi);
+    }
+}
+
+//do selection and regulation
+1: late(){
+	inds = p1.individuals;
+	//individual-level fitness is all about having a p in the right PC
+	PC = 0;
+	if (sim.getValue("Regime")==1){
+	    PC = 2;
+	}
+	for (ind in inds){
+	    y = which(PC==ind.getValue("P"));
+	    z = which(1==ind.getValue("P"));
+	    if (size(y) > 0){
+	        ind.fitnessScaling = 1.0;
+	    } else if (size(z) > 0){
+	    	  ind.fitnessScaling = 0.8;
+	    } else {
+	        ind.fitnessScaling = 0.6;
+	    }
+	}
+
+}
+
+//some logging
+1:10000 late(){
+	inds = p1.individuals;
+	fg0 = size(inds[inds.getValue("G")==0])/size(inds);
+	fg1 = size(inds[inds.getValue("G")==1])/size(inds);
+	fg2 = size(inds[inds.getValue("G")==2])/size(inds);
+	fg3 = size(inds[inds.getValue("G")==3])/size(inds);
+	fg4 = size(inds[inds.getValue("G")==4])/size(inds);
+	gp0 = size(inds[inds.getValue("P")==0])/size(inds);
+	gp1 = size(inds[inds.getValue("P")==1])/size(inds);
+	gp2 = size(inds[inds.getValue("P")==2])/size(inds);
+	
+	gs = c(fg0, fg1, fg2, fg3, fg4);
+	tg = which(gs==max(gs));
+	maps = unique(inds.getValue("GPS"));
+	mapFreqs = float(length=0);
+	for (m in maps){
+		yups = inds[inds.getValue("GPS")==m];
+		frq = size(yups)/size(inds);
+	   mapFreqs = c(mapFreqs, frq);
+	}
+	top = max(mapFreqs);
+	topInd = which(mapFreqs==top);
+	topmap = maps[topInd];
+	mW = mean(inds.fitnessScaling);
+	
+	fC = size(inds[inds.getValue("P")==1])/size(inds);
+	fCn	= mean(inds.getValue("C"));
+	mS = mean(inds.getValue("S"));
+	
+	if (sim.cycle % 10 == 0.0){
+		catn(c(sim.cycle, mW, fC, fCn, mS, topmap, tg)); 
+		writeFile("log.csv", paste(c(Rep, sim.cycle, lambda, rho, mW, fC, fCn, mS, topmap, tg),sep=','),append=T); 
+	}
+}
+
+

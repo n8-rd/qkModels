@@ -1,0 +1,165 @@
+// this is an extension of the Draghi et al. 2010 model.
+// In that model, mutational robustness, q, is a model parameter
+// and the environment doesn't change (except that at time t phenotype C
+// become better than the initial phenotype A.)
+//In this version of the model, we let q be a freely evolvable, quantitative
+//trait. And we include fluctuating selection at period lambda.
+// In essence we are asking the Meyers et al. 2005 question with a genetic model
+//that merges what's in Draghi et al. 2010 and Meyers et al. 2005
+
+// this expects a few paremeter values to be set on the command line:
+// e.g., slim -d ks=5 -d la=100 -d rep=1 SF3_qkModel_Divergent.slim
+
+//--------------------------------------------------------------------//
+//helper function
+function (integer)Helper(integer kis){
+	kINp = asInteger(asLogical(match(P, kis)+1));
+	return kINp;
+}
+
+//calculate Simpson's Diversity
+function (float)Simpson(integer tallies){
+	D = 1 - (sum(tallies^2))/sum(tallies)^2;
+	return D;
+}
+//--------------------------------------------------------------------//
+
+initialize() {
+	initializeSLiMModelType("WF");
+	defineConstant("Rep", rep); //replication number [rep]
+	defineConstant("t", 100); //gens before environment starts to cycle
+	defineConstant("lambda", la); //rate of environmental cycling [la]
+	defineConstant("PS", 6); //size of the phenotype space
+	defineConstant("KS", ks); //size of phenotypic neighborhood [ks]
+	defineConstant("P", seq(0,PS-1)); //set of possible phenotypes
+	defineConstant("u", 2e-3); //mutation rate 
+	defineConstant("N", 500); //size of population
+	defineConstant("P0", sample(P, 1)); //initial phenotype
+	remainder = setDifference(P, P0);
+	defineConstant("K0", sample(P, KS, replace=F)); //initial phenotypic neighborhood
+	defineConstant("PC1", sample(remainder, 1)); //K0 is also the initial set of adaptative phenotypes
+	leftovers = setDifference(remainder, PC1);
+	defineConstant("PC2", sample(leftovers, 1)); //alternative set of adaptive phenotypes
+	crumbs = setDifference(leftovers, PC2);
+	defineConstant("V", sample(crumbs, 1)); //generalist
+	catn(PC1);
+	catn(PC2);
+	catn(V);
+}
+
+
+// set up population (no structure)
+// and give individuals their initial P and K states
+1 early() {
+	sim.addSubpop("p1", N);
+	sim.setValue("Regime", 0); //start in selective regime 0
+	inds = p1.individuals;
+	inds.setValue("p", P0);
+	inds.setValue("k", K0);
+	inds.setValue("b", 0);
+	inds.setValue("v", 0);
+	inds.setValue("q", 0.1);
+}
+
+modifyChild(){
+	//mind which Regime we are in
+	PC = PC1;
+	PCalt = PC2;
+	if (sim.getValue("Regime")==1){
+		PC = PC2;
+		PCalt = PC1;
+	}
+	//get some stuff
+	pi = parent1.getValue("p");
+	ki = parent1.getValue("k");
+	bi = parent1.getValue("b");
+	qi = parent1.getValue("q");
+	vi = parent1.getValue("v");
+	//was there a mutation?
+	moin = rbinom(1,1,u);
+	if (moin == 1){ //yes, there was a mutation
+		//is the mutation neutral?
+		coin = rbinom(1,1,qi);
+		if (coin==1){ //yes, it's neutral
+			//select a new phenotype neighborhood
+			ki = sample(P, KS);
+			bi = size(setIntersection(ki,PCalt))/KS;
+		} else {//no it's not neutral
+			//does it affect the niche phenotype or the mut robustness phenotype
+			toin = rbinom(1,1,0.5);
+			if (toin==1){ //change q
+				qi = runif(1,0.0,1.0);
+			} else {
+				//chose a new p
+				//and also a new neighborhood and q
+				pi = sample(ki,1);
+				ki = sample(P, KS);
+				bi = size(setIntersection(ki,PCalt))/KS;
+				if (size(setIntersection(pi,V))>0){
+					vi = 1;
+				}	else {
+					vi = 0;
+				}
+			}
+		}
+	}
+	child.setValue("p", pi);
+	child.setValue("k", ki);
+	child.setValue("b", bi);
+	child.setValue("q", qi);
+	child.setValue("v", vi);
+	return T;
+}
+
+//do Regime changes
+1: early(){
+	if (sim.cycle % lambda == 0){
+		Regi = sim.getValue("Regime");
+		newRegi = abs(Regi-1);
+		sim.setValue("Regime", newRegi);
+	}
+}
+
+//do selection
+1: late(){
+	inds = p1.individuals;
+	//individual-level fitness is all about having a p in the right PC
+	PC = PC1;
+	if (sim.getValue("Regime")==1){
+		PC = PC2;
+	}
+	for (ind in inds){
+		y = which(PC==ind.getValue("p"));
+		z = which(V==ind.getValue("p"));
+		if (size(y) > 0){
+			ind.fitnessScaling = 1.0;
+		} else if (size(z) > 0){
+			ind.fitnessScaling = 0.8;
+		} else {
+			ind.fitnessScaling = 0.6; 
+		}
+	}
+}
+
+//some logging
+100:20000 late(){
+	inds = p1.individuals;
+	mQ = mean(inds.getValue("q"));
+	mW = mean(inds.fitnessScaling);
+	mB = mean(asFloat(inds.getValue("b")));
+	mV = mean(asFloat(inds.getValue("v")));
+	Regi = sim.getValue("Regime");
+	kin = sapply(inds, "Helper(applyValue.getValue('k'));");
+	prom = matrix(kin, ncol=PS, byrow=T);
+	tots = asFloat(apply(prom, 1, "sum(applyValue);"));
+	tots[which(isNAN(tots))] = 0.0;
+	S = size(which(tots!=0.0))/PS;
+	props = tots/sum(tots);
+	D = Simpson(asInteger(tots));
+	if (sim.cycle % 10 == 0.0){
+		catn(c(sim.cycle, Regi, mW, mQ, mB,S,D,mV));
+		writeFile("log.csv", paste(c(Rep,lambda,sim.cycle,Regi,KS,u,mW,mQ,mB,S,D,mV),sep=','),append=T);
+	}
+}
+
+

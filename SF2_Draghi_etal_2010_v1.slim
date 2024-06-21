@@ -1,0 +1,103 @@
+// this is an individual-based version of the Draghi et al. 2010 model
+// it expects a few parameter values to be passed from the command line:
+// eg: slim -d ks=5 -d qu=0.5 -d rep=1 SF2_Draghi_etal_2010_v1.slim
+
+initialize() {
+	initializeSLiMModelType("WF");
+	defineConstant("Rep", rep); //replication number
+	defineConstant("t", 100); //gens before PC becomes adaptive
+	defineConstant("PS", 101); //size of the phenotype space
+	defineConstant("KS", ks); //size of phenotypic neighborhood
+	defineConstant("P", seq(0,100)); //set of mossible phenotypes
+	defineConstant("q", qu); //mutational robustness
+	defineConstant("u", 1e-2); //mutation rate
+	defineConstant("N", 1000); //size of population
+	defineConstant("P0", sample(P, 1)); //initial phenotype
+	poi = which(P==P0);
+	Pleft = P[P!=poi];
+	defineConstant("K0", sample(Pleft, KS, replace=F)); //initial phenotypic neighborhood
+	defineConstant("PC", sample(Pleft, 1)); //new adaptive phenotype C
+}
+
+
+//we'll handle the mutational process here
+modifyChild(){
+	//get some stuff
+	pi = parent1.getValue("p");
+	ki = parent1.getValue("k");
+	spi = parent1.getValue("sp");
+	//was there a mutation?
+	moin = rbinom(1,1,u);
+	if (moin == 1){ //yes, there was a mutation
+		//is the mutation neutral?
+		coin = rbinom(1,1,q);
+		if (coin==1){ //yes, it's neutral
+			//select a new phenotype neighborhood
+			ki = sample(P, KS);
+			xa = which(ki==PC);
+			if (size(xa)>0) {//PC is in the neighborhood, so sp B
+				spi = "B";
+			} else { //PC not the zone, sp sp A
+				spi = "A";
+			}
+		} else {//no it's not neutral
+			//chose a new p
+			pi = sample(ki,1);
+			if (pi == PC){//hit the target!
+				spi ="C";
+			} else { //the mutation was deleterious
+				spi = "D";
+			}
+		}
+	}
+	child.setValue("p", pi);
+	child.setValue("k", ki);
+	child.setValue("sp", spi);
+	return T;
+}
+
+// set up population (no structure)
+// and give individuals their initial P and K states
+1 early() {
+	sim.addSubpop("p1", N);
+	inds = p1.individuals;
+	inds.setValue("p", P0);
+	inds.setValue("k", K0);
+	inds.setValue("sp", "A");
+}
+
+//do selection and regulation
+1: late(){
+	inds = p1.individuals;
+	//class-specific fitness
+	if (sim.cycle < t){
+		inds[inds.getValue("sp")=="A"].fitnessScaling = 0.8;
+		inds[inds.getValue("sp")=="B"].fitnessScaling = 0.8;
+		inds[inds.getValue("sp")=="C"].fitnessScaling = 0.0;
+	} else {
+		inds[inds.getValue("sp")=="A"].fitnessScaling = 0.8;
+		inds[inds.getValue("sp")=="B"].fitnessScaling = 0.8;
+		inds[inds.getValue("sp")=="C"].fitnessScaling = 1.0;
+	}
+	inds[inds.getValue("sp")=="D"].fitnessScaling = 0.0;
+}
+
+//some logging
+100:20000 late(){
+	inds = p1.individuals;
+	fB = size(inds[inds.getValue("sp")=="B"])/size(inds);
+	fA = size(inds[inds.getValue("sp")=="A"])/size(inds);
+	fC = size(inds[inds.getValue("sp")=="C"])/size(inds);
+	if (sim.cycle % 100 == 0.0){
+		catn(c(sim.cycle, fA, fB, fC));
+	}
+	writeFile("log.csv", paste(c(Rep,sim.cycle,KS,q,u,fA,fB),sep=','),append=T);
+	cs = inds[inds.getValue("sp")=="C"];
+	if (size(cs) > 0){
+		catn("Nailed it!");
+		catn(c(sim.cycle, fA, fB, fC));
+		sim.simulationFinished();
+	}
+}
+
+

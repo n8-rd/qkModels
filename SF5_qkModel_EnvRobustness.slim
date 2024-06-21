@@ -1,0 +1,121 @@
+// Another riff on the Draghi et al. 2010 model.
+// Here, we consider environmental / developmental
+// robustness as opposed to mutational rubustness.
+// it expects a few parameter values to be set from the command line,
+//e.g., slim -d rep=1 -d ks=6 -d qu=0.5 SF5_qkModel_EnvRobustness.slim
+
+initialize() {
+	initializeSLiMModelType("WF");
+	defineConstant("Rep", rep); //replication number
+	defineConstant("EnS", 101); //size of the environment space
+	defineConstant("KS", ks); //size of environmental neighborhood
+	defineConstant("En", seq(0,100)); //set of possible environments
+	defineConstant("q", qu); //environmental (i.e. deveopmental) robustness
+	defineConstant("u", 1e-2); //mutation rate
+	defineConstant("m", 0.01); //migration rate
+	defineConstant("N", 1000); //size of population
+	defineConstant("En0", sample(En, 1)); //initial environment
+	eoi = which(En==En0);
+	Eleft = En[En!=eoi];
+	defineConstant("K0", sample(Eleft, KS, replace=F)); //initial environment neighborhood
+	defineConstant("EnC", sample(Eleft, 1)); //sweapstakes environment C
+}
+
+// set up population (no structure)
+// and give individuals their initial P and K states
+1 early() {
+	sim.addSubpop("p1", N);
+	inds = p1.individuals;
+	inds.setValue("en", En0);
+	inds.setValue("k", K0);
+	inds.setValue("sp", "Am");
+	inds.setValue("g", 0); 
+}
+
+//we'll handle migration and mutatation here
+modifyChild(){
+	//get some stuff from parent
+	pi = parent1.getValue("en");
+	ki = parent1.getValue("k");
+	spi = parent1.getValue("sp");
+	gi = parent1.getValue("g");
+	//is there mutation?
+	muin = rbinom(1,1,u);
+	if (muin==1){
+		gi = abs(gi-1);
+	}
+	//is there migration?
+	moin = rbinom(1,1,m);
+	if (moin == 1){ //yes, migration
+		//is the migration neutral?
+		coin = rbinom(1,1,q);
+		if (coin==1){ //yes, it's neutral
+			//select a new environmental neighborhood
+			ki = sample(En, KS);
+			xa = which(ki==EnC);
+			if (size(xa)>0) {//EnC is in the neighborhood, so sp B
+				if (gi==0){//no new allele
+					spi = "Bm";
+				} else { //with new allele
+					spi = "Bp";
+				}
+			} else { //EnC not the zone, so sp A
+				if (gi==0){
+					spi = "Am";
+				} else {
+					spi = "Ap";
+				}
+			}
+		} else {//no it's not neutral
+			//chose a new p
+			pi = sample(ki,1);
+			if (pi == EnC & gi == 1){//made it EC with new allele
+				spi ="Cp";
+			} else if (pi == EnC & gi == 0){//to EnC without new allele
+				spi = "Cm";
+			} else { //didn't
+				spi = "D";
+			}
+		}
+	}
+	child.setValue("en", pi);
+	child.setValue("k", ki);
+	child.setValue("sp", spi);
+	child.setValue("g", gi);
+	return T;
+}
+
+//do selection and regulation
+1: late(){
+	inds = p1.individuals;
+	//class-specific fitness
+	inds[inds.getValue("sp")=="Am"].fitnessScaling = 1.0;
+	inds[inds.getValue("sp")=="Ap"].fitnessScaling = 0.95;
+	inds[inds.getValue("sp")=="Bm"].fitnessScaling = 1.0;
+	inds[inds.getValue("sp")=="Bp"].fitnessScaling = 1.0;
+	inds[inds.getValue("sp")=="Cp"].fitnessScaling = 1.1;
+	inds[inds.getValue("sp")=="Cm"].fitnessScaling = 0.0;
+	inds[inds.getValue("sp")=="D"].fitnessScaling = 0.0;
+}
+
+//some logging
+100:10000 late(){
+	inds = p1.individuals;
+	fBm = size(inds[inds.getValue("sp")=="Bm"])/size(inds);
+	fAm = size(inds[inds.getValue("sp")=="Am"])/size(inds);
+	fCm = size(inds[inds.getValue("sp")=="Cm"])/size(inds);
+	fBp = size(inds[inds.getValue("sp")=="Bp"])/size(inds);
+	fAp = size(inds[inds.getValue("sp")=="Ap"])/size(inds);
+	fCp = size(inds[inds.getValue("sp")=="Cp"])/size(inds);
+	if (sim.cycle % 1 == 0.0){
+		writeFile("log.csv", paste(c(Rep,sim.cycle,KS,q,u,fAm+fAp,fBm+fBp),sep=','),append=T);
+	}
+	cs = inds[inds.getValue("sp")=="Cp"];
+	if (size(cs) > 0){
+		catn("Nailed it!");
+		catn(c(sim.cycle, fAm+fAp, fBm+fBp, fCm+fCp));
+		sim.simulationFinished();
+	}
+}
+
+

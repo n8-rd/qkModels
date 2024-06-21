@@ -1,0 +1,205 @@
+// a version of the Meyers et al. 05 + Draghi et al. 10 model
+//in which q and K are both freely evolvable
+// it expects a couple of parameters to be set from the commmand line,
+//e.g., slim -d rep=1 -d la=100 -d qrat=0.5 SF6_qkModel_Free.slim
+
+//--------------------------------------------------------------------//
+
+//helper function
+function (integer)Helper(integer kis){
+	kINp = asInteger(asLogical(match(P, kis)+1));
+	return kINp;
+}
+
+//calculate Simpson's Diversity
+function (float)Simpson(integer tallies){
+	D = 1 - (sum(tallies^2))/sum(tallies)^2;
+	return D;
+}
+//--------------------------------------------------------------------//
+
+initialize() {
+	initializeSLiMModelType("WF");
+	defineConstant("Rep", rep); //replication number [rep]
+	defineConstant("t", 100); //gens before environment starts to cycle
+	defineConstant("lambda", la); //rate of environmental cycling [la]
+	defineConstant("Q", qrat); //here q is a model parameter
+	defineConstant("B", 1.2); //birth rate
+	defineConstant("PS", 6); //size of the phenotype space
+	defineConstant("P", seq(0,PS-1)); //set of possible phenotypes
+	defineConstant("u", 2e-2); //mutation rate [1e-3, 1e-2]
+	defineConstant("N", 500); //size of population
+	defineConstant("P0", sample(P, 1)); //initial phenotype
+	remainder = setDifference(P, P0);
+	defineConstant("K0", sample(P, 3, replace=F)); //initial phenotypic neighborhood
+	defineConstant("PC1", sample(remainder, 1)); //K0 is also the initial set of adaptative phenotypes
+	leftovers = setDifference(remainder, PC1);
+	defineConstant("PC2", sample(leftovers, 1)); //alternative set of adaptive phenotypes
+	crumbs = setDifference(leftovers, PC2);
+	defineConstant("V", sample(crumbs, 1)); //generalist
+	catn(PC1);
+	catn(PC2);
+	catn(V);
+}
+
+
+// set up population (no structure)
+// and give individuals their initial P and K states
+1 early() {
+	sim.addSubpop("p1", N);
+	sim.setValue("Regime", 0); //start in selective regime 0
+	inds = p1.individuals;
+	inds.setValue("p", P0);
+	inds.setValue("k", K0);
+	inds.setValue("b", 0);
+	inds.setValue("v", 0);
+	inds.setValue("q", Q);
+	inds.setValue("kv", 0);
+	inds.setValue("ks", size(K0));
+}
+
+modifyChild(){
+	//mind which Regime we are in
+	PC = PC1;
+	PCalt = PC2;
+	if (sim.getValue("Regime")==1){
+		PC = PC2;
+		PCalt = PC1;
+	}
+	//get some stuff
+	pi = parent1.getValue("p");
+	ki = parent1.getValue("k");
+	bi = parent1.getValue("b");
+	qi = parent1.getValue("q");
+	vi = parent1.getValue("v");
+	kvi = parent1.getValue("kv");
+	//was there a mutation?
+	moin = rbinom(1,1,u);
+	if (moin == 1){ //yes, there was a mutation
+		//is the mutation neutral?
+		coin = rbinom(1,1,qi);
+		if (coin==1){ //yes, it's neutral
+			if (size(ki)==1){ //add another p to k
+				options = setDifference(P, c(pi, ki));
+				ki = c(ki, sample(options, 1));
+				//catn(ki);
+			} else if (size(ki)==PS){ //remove a p from k
+				dropper = sample(seq(0,5),1);
+				comb = rep(T, PS);
+				comb[dropper] = F;
+				ki = ki[comb];
+				//catn(ki);
+			} else { //flip a coin an either add to or take away a p from k
+				penny = rbinom(1,1,0.5);
+				if (penny==1){ //add one
+					options = setDifference(P, ki);
+					ki = c(ki, sample(options, 1));
+				} else { //take one away
+					dropper = sample(seq(0,size(ki)-1),1);
+					comb = rep(T, size(ki));
+					comb[dropper] = F;
+					ki = ki[comb];
+				}
+				bi = size(setIntersection(ki,PCalt)) ? 1 else 0;
+				kvi = size(setIntersection(ki,V)) ? 1 else 0;
+			}
+		} else {//no it's not neutral
+			//does it affect the niche phenotype or the mut robustness phenotype or Ks
+			toin = rbinom(1,1,0.5);
+			if (toin==2){ //change q
+				qi = runif(1,0.0,1.0);
+			} else {
+				//chose a new p and alter ki
+				pi = sample(ki,1);
+				if (size(ki)==1){ //add another p to k
+					options = setDifference(P, c(pi, ki));
+					ki = c(ki, sample(options, 1));
+				} else if (size(ki)==6){ //remove a p from k
+					dropper = sample(seq(0,5),1);
+					comb = rep(T, PS);
+					comb[dropper] = F;
+					ki = ki[comb];
+				} else { //flip a coin an either add to or take away a p from k
+					penny = rbinom(1,1,0.5);
+					if (penny==1){ //add one
+						options = setDifference(P, ki);
+						ki = c(ki, sample(options, 1));
+					} else { // take one away
+						dropper = sample(seq(0,size(ki)-1),1);
+						comb = rep(T, size(ki));
+						comb[dropper] = F;
+						ki = ki[comb];
+					}
+					bi = size(setIntersection(ki,PCalt)) ? 1 else 0;
+					kvi = size(setIntersection(ki,V)) ? 1 else 0;
+					vi = size(setIntersection(pi,V)) ? 1 else 0;
+				}
+			}
+		}
+	}
+	child.setValue("p", pi);
+	child.setValue("k", ki);
+	child.setValue("b", bi);
+	child.setValue("q", qi);
+	child.setValue("v", vi);
+	child.setValue("kv", kvi);
+	child.setValue("ks", size(ki));
+	return T;
+}
+
+//do Regime changes
+1: early(){
+	if (sim.cycle % lambda == 0){
+		Regi = sim.getValue("Regime");
+		newRegi = abs(Regi-1);
+		sim.setValue("Regime", newRegi);
+	}
+}
+
+//do selection
+1: late(){
+	inds = p1.individuals;
+	//individual-level fitness is all about having a p in the right PC
+	PC = PC1;
+	if (sim.getValue("Regime")==1){
+		PC = PC2;
+	}
+	for (ind in inds){
+		y = which(PC==ind.getValue("p"));
+		z = which(V==ind.getValue("p"));
+		if (size(y) > 0){
+			ind.fitnessScaling = 1.0;
+		} else if (size(z) > 0){
+			ind.fitnessScaling = 0.8;
+		} else {
+			ind.fitnessScaling = 0.6;
+		}
+	}
+}
+
+//some logging
+100:10000 late(){
+	inds = p1.individuals;
+	mQ = mean(inds.getValue("q"));
+	mK = mean(inds.getValue("ks"));
+	mW = mean(inds.fitnessScaling);
+	mB = mean(asFloat(inds.getValue("b")));
+	mV = mean(asFloat(inds.getValue("v")));
+	mC = mean(asFloat(inds.getValue("kv")));
+	Regi = sim.getValue("Regime");
+	S= 1.0;
+	profiles = integer(length=0);
+	kin = sapply(inds, "Helper(applyValue.getValue('k'));");
+	prom = matrix(kin, ncol=PS, byrow=T);
+	tots = asFloat(apply(prom, 1, "sum(applyValue);"));
+	tots[which(isNAN(tots))] = 0.0;
+	S = size(which(tots!=0.0))/PS;
+	props = tots/sum(tots);
+	D = Simpson(asInteger(tots));
+	if (sim.cycle % 10 == 0.0){
+		catn(c(sim.cycle, Regi, mW, mQ, mK, mB,S,D,mV,mC));
+		writeFile("log.csv", paste(c(Rep,lambda,sim.cycle,Regi,u,mW,mQ,mK,mB,S,D,mV,mC),sep=','),append=T);
+	}
+}
+
+
